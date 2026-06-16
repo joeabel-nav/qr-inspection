@@ -1,23 +1,32 @@
 // AssetConfirm.jsx
-// Shows asset identity card + open defect summary.
-// User confirms or goes back to re-enter tag.
+// Second screen — shown after PIN entry.
+// Looks up equipment by qr_token, shows asset card.
+// If inspector needs_name (new user), prompts for name here before continuing.
 
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { isOnline } from '../lib/connectivity.js'
 import Shell from '../components/Shell.jsx'
 
 export default function AssetConfirm() {
-  const navigate   = useNavigate()
-  const equipment  = JSON.parse(sessionStorage.getItem('nv_insp_equipment') || 'null')
+  const navigate  = useNavigate()
+  const location  = useLocation()
+  const token     = location.state?.token || new URLSearchParams(window.location.search).get('t')
+  const inspector = JSON.parse(sessionStorage.getItem('nv_insp_inspector') || 'null')
 
-  const [defects,  setDefects]  = useState([])
-  const [online,   setOnline]   = useState(true)
-  const [loading,  setLoading]  = useState(true)
+  const [equipment, setEquipment] = useState(null)
+  const [defects,   setDefects]   = useState([])
+  const [online,    setOnline]    = useState(true)
+  const [loading,   setLoading]   = useState(true)
+  const [error,     setError]     = useState('')
+  // Name collection for new inspectors
+  const [name,      setName]      = useState('')
+  const [savingName, setSavingName] = useState(false)
+  const [nameError,  setNameError]  = useState('')
 
   useEffect(() => {
-    if (!equipment) { navigate('/inspect'); return }
+    if (!token || !inspector) { navigate('/inspect'); return }
     init()
   }, [])
 
@@ -25,41 +34,145 @@ export default function AssetConfirm() {
     const online = await isOnline()
     setOnline(online)
 
+    // Look up equipment by token
+    const { data: equip, error: equipErr } = await supabase
+      .from('equipment')
+      .select('id, asset_tag, name, make, model, year, machine_type, company, meter_hours, odometer_km')
+      .eq('qr_token', token)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (equipErr || !equip) {
+      setError('This QR code does not match any active equipment. It may have been regenerated.')
+      setLoading(false)
+      return
+    }
+
+    setEquipment(equip)
+    sessionStorage.setItem('nv_insp_equipment', JSON.stringify(equip))
+
+    // Load open defects
     if (online) {
       const { data } = await supabase
         .from('defects')
         .select('id, description, status, created_at')
-        .eq('equipment_id', equipment.id)
+        .eq('equipment_id', equip.id)
         .neq('status', 'resolved')
         .order('created_at', { ascending: true })
-      setDefects(data || [])
+      const defectList = data || []
+      setDefects(defectList)
+      sessionStorage.setItem(`nv_defects_${equip.id}`, JSON.stringify(defectList))
     } else {
-      // Try to use cached defects
-      const cached = sessionStorage.getItem(`nv_defects_${equipment.id}`)
+      const cached = sessionStorage.getItem(`nv_defects_${equip.id}`)
       if (cached) setDefects(JSON.parse(cached))
     }
 
     setLoading(false)
   }
 
-  function handleContinue() {
-    // Persist defects for use during inspection
-    sessionStorage.setItem(`nv_defects_${equipment.id}`, JSON.stringify(defects))
-    navigate('/pin')
+  async function handleNameSubmit() {
+    if (!name.trim()) return
+    setSavingName(true)
+    setNameError('')
+
+    const { data: newInsp, error } = await supabase
+      .from('qr_inspectors')
+      .insert({
+        employee_number: inspector.employee_number,
+        full_name:       name.trim(),
+      })
+      .select('id')
+      .single()
+
+    if (error || !newInsp) {
+      setSavingName(false)
+      setNameError('Could not save your name. Please try again.')
+      return
+    }
+
+    // Update session with real id and name
+    const updated = { ...inspector, id: newInsp.id, name: name.trim(), needs_name: false }
+    sessionStorage.setItem('nv_insp_inspector', JSON.stringify(updated))
+    setSavingName(false)
+    navigate('/run')
   }
 
-  if (!equipment) return null
+  function handleContinue() {
+    navigate('/run')
+  }
 
+  // ── Loading ───────────────────────────────────────────────
+  if (loading) {
+    return (
+      <Shell title="Loading…" subtitle="Navacon Inspection">
+        <div className="flex flex-col items-center justify-center py-20 gap-4">
+          <div className="w-10 h-10 border-2 border-[#2B7FC1] border-t-transparent rounded-full animate-spin" />
+        </div>
+      </Shell>
+    )
+  }
+
+  // ── Token error ───────────────────────────────────────────
+  if (error) {
+    return (
+      <Shell title="QR code not recognised" subtitle="Navacon Inspection">
+        <div className="space-y-4 py-4">
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+            <p className="text-red-400 text-sm">{error}</p>
+          </div>
+          <button onClick={() => navigate('/inspect')} className="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium rounded-xl py-3.5 text-base transition-colors">
+            Back
+          </button>
+        </div>
+      </Shell>
+    )
+  }
+
+  // ── Name entry for new inspector ──────────────────────────
+  if (inspector?.needs_name) {
+    return (
+      <Shell title="One more thing" subtitle={equipment?.asset_tag}>
+        <div className="space-y-5">
+          <p className="text-sm text-gray-400 leading-relaxed">
+            Employee number <span className="text-white font-medium">{inspector.employee_number}</span> is new to this system. Enter your name so your inspections can be recorded.
+          </p>
+          <input
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Your full name"
+            autoFocus
+            className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3.5 text-base placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#2B7FC1] focus:border-transparent"
+          />
+          {nameError && <p className="text-red-400 text-sm">{nameError}</p>}
+          <button
+            onClick={handleNameSubmit}
+            disabled={!name.trim() || savingName}
+            className="w-full bg-[#2B7FC1] hover:bg-[#2470AD] disabled:opacity-40 text-white font-medium rounded-xl py-4 text-base transition-colors"
+          >
+            {savingName ? 'Saving…' : 'Continue'}
+          </button>
+          <button
+            onClick={() => navigate('/inspect')}
+            className="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium rounded-xl py-3.5 text-base transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </Shell>
+    )
+  }
+
+  // ── Asset confirmation ────────────────────────────────────
   const typeLabel = {
     MT: 'Mobile Tracked', MW: 'Mobile Wheeled', DT: 'Dump Truck',
     TW: 'Tri-Axle', FV: 'Fleet Vehicle',
   }[equipment.machine_type] ?? equipment.machine_type ?? 'Equipment'
 
   return (
-    <Shell title="Confirm machine" subtitle="Navacon Construction">
+    <Shell title="Confirm machine" subtitle={`Employee ${inspector?.employee_number}`}>
       <div className="space-y-4">
 
-        {/* Offline banner */}
         {!online && (
           <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex gap-3">
             <svg className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -89,34 +202,28 @@ export default function AssetConfirm() {
           </div>
         </div>
 
-        {/* Open defects summary */}
-        {!loading && (
-          <div className="bg-gray-900 border border-white/[0.06] rounded-2xl p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-gray-500 uppercase tracking-wide">Open defects</span>
-              {defects.length > 0 ? (
-                <span className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs px-2.5 py-1 rounded-full">
-                  {defects.length} open
-                </span>
-              ) : (
-                <span className="bg-green-500/10 text-green-400 border border-green-500/20 text-xs px-2.5 py-1 rounded-full">
-                  None
-                </span>
-              )}
-            </div>
+        {/* Open defects */}
+        <div className="bg-gray-900 border border-white/[0.06] rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 uppercase tracking-wide">Open defects</span>
             {defects.length > 0 ? (
-              <p className="text-sm text-gray-400">
-                {defects.length} open {defects.length === 1 ? 'defect' : 'defects'} will appear during the inspection for you to update.
-              </p>
+              <span className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs px-2.5 py-1 rounded-full">
+                {defects.length} open
+              </span>
             ) : (
-              <p className="text-sm text-gray-400">No open defects on record for this machine.</p>
+              <span className="bg-green-500/10 text-green-400 border border-green-500/20 text-xs px-2.5 py-1 rounded-full">
+                None
+              </span>
             )}
           </div>
-        )}
+          <p className="text-sm text-gray-400">
+            {defects.length > 0
+              ? `${defects.length} open ${defects.length === 1 ? 'defect' : 'defects'} will appear during the inspection.`
+              : 'No open defects on record for this machine.'}
+          </p>
+        </div>
 
-        <p className="text-sm text-gray-400 leading-relaxed">
-          Is this the correct machine?
-        </p>
+        <p className="text-sm text-gray-400">Is this the correct machine?</p>
 
         <button onClick={handleContinue} className="w-full bg-[#2B7FC1] hover:bg-[#2470AD] text-white font-medium rounded-xl py-4 text-base transition-colors">
           Yes — begin inspection
