@@ -8,6 +8,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { isOnline } from '../lib/connectivity.js'
 import Shell from '../components/Shell.jsx'
+import QrScannerOverlay from '../components/QrScannerOverlay.jsx'
 
 export default function AssetConfirm() {
   const navigate  = useNavigate()
@@ -24,6 +25,7 @@ export default function AssetConfirm() {
   const [name,      setName]      = useState('')
   const [savingName, setSavingName] = useState(false)
   const [nameError,  setNameError]  = useState('')
+  const [showScanner, setShowScanner] = useState(false)
 
   useEffect(() => {
     if (!token || !inspector) { navigate('/inspect'); return }
@@ -99,6 +101,18 @@ export default function AssetConfirm() {
 
   function handleContinue() {
     navigate('/run')
+  }
+
+  if (showScanner) {
+    return (
+      <QrScannerOverlay
+        onClose={() => setShowScanner(false)}
+        onFound={(scannedToken) => {
+          setShowScanner(false)
+          navigate('/pin', { state: { token: scannedToken } })
+        }}
+      />
+    )
   }
 
   // ── Loading ───────────────────────────────────────────────
@@ -229,7 +243,7 @@ export default function AssetConfirm() {
           Yes — begin inspection
         </button>
         <button
-          onClick={() => navigate('/inspect')}
+          onClick={() => setShowScanner(true)}
           className="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium rounded-xl py-3.5 text-base transition-colors"
         >
           Wrong machine — re-scan

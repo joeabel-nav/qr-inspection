@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { isOnline } from '../lib/connectivity.js'
 import Shell from '../components/Shell.jsx'
+import QrScannerOverlay from '../components/QrScannerOverlay.jsx'
 
 export default function Complete() {
   const navigate   = useNavigate()
@@ -21,6 +22,7 @@ export default function Complete() {
   const [phase,  setPhase]  = useState(!equipment || !inspector ? 'redirect' : 'confirm')
   const [online, setOnline] = useState(true)
   const [errMsg, setErrMsg] = useState('')
+  const [showScanner, setShowScanner] = useState(false)
 
   useEffect(() => {
     if (!equipment || !inspector) { navigate('/inspect'); return }
@@ -98,13 +100,27 @@ export default function Complete() {
   }
 
   function handleStartAnother() {
-    navigate('/inspect')
+    setShowScanner(true)
+  }
+
+  function handleScanFound(token) {
+    setShowScanner(false)
+    navigate('/pin', { state: { token } })
   }
 
   // ── Screens ───────────────────────────────────────────────
 
   // Waiting for useEffect redirect — render nothing
   if (phase === 'redirect') return null
+
+  if (showScanner) {
+    return (
+      <QrScannerOverlay
+        onClose={() => setShowScanner(false)}
+        onFound={handleScanFound}
+      />
+    )
+  }
 
   if (phase === 'submitting') {
     return (
