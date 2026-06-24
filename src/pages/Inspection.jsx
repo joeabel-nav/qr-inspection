@@ -30,8 +30,9 @@ export default function Inspection() {
     loadTemplate()
   }, [])
 
-  // ── Template loading ───────────────────────────────────────
+  // ── Template loading (component-based) ──────────────────
   async function loadTemplate() {
+    // Priority: asset-specific → machine-type → generic fallback
     let template = null
     const { data: specific } = await supabase
       .from('inspection_templates')
@@ -70,23 +71,62 @@ export default function Inspection() {
     if (template) {
       sessionStorage.setItem('nv_insp_template_id', template.id)
 
-      const { data: groups } = await supabase
-        .from('inspection_groups')
-        .select(`
-          id, name, sort_order,
-          inspection_questions (
-            id, question_text, question_type, photo_required,
-            expected_min_seconds, notes_prompt
-          )
-        `)
+      // Load component order for this template
+      const { data: tComps } = await supabase
+        .from('inspection_template_components')
+        .select('component_id, sort_order')
         .eq('template_id', template.id)
         .order('sort_order', { ascending: true })
 
-      if (groups) {
-        for (const group of groups) {
-          const qs = shuffle(group.inspection_questions || [])
-          for (const q of qs) {
-            builtQuestions.push({ ...q, group_name: group.name, source: 'template' })
+      if (tComps?.length) {
+        // Load all item overrides for this template
+        const { data: overrides } = await supabase
+          .from('inspection_item_overrides')
+          .select('component_item_id, is_enabled')
+          .eq('template_id', template.id)
+        const overrideMap = Object.fromEntries(
+          (overrides || []).map(o => [o.component_item_id, o.is_enabled])
+        )
+
+        // Load components + their items in order
+        const compIds = tComps.map(tc => tc.component_id)
+        const { data: comps } = await supabase
+          .from('inspection_components')
+          .select('id, name')
+          .in('id', compIds)
+        const compById = Object.fromEntries((comps || []).map(c => [c.id, c]))
+
+        const { data: allItems } = await supabase
+          .from('inspection_component_items')
+          .select('id, component_id, question_text, question_type, default_enabled, sort_order, notes_prompt, photo_required')
+          .in('component_id', compIds)
+          .order('sort_order', { ascending: true })
+        const itemsByComp = {}
+        for (const item of (allItems || [])) {
+          if (!itemsByComp[item.component_id]) itemsByComp[item.component_id] = []
+          itemsByComp[item.component_id].push(item)
+        }
+
+        // Assemble questions in component order, applying overrides
+        for (const tc of tComps) {
+          const comp  = compById[tc.component_id]
+          const items = itemsByComp[tc.component_id] || []
+          for (const item of items) {
+            // Determine enabled: override takes precedence over default
+            const enabled = item.id in overrideMap
+              ? overrideMap[item.id]
+              : item.default_enabled
+            if (!enabled) continue
+            builtQuestions.push({
+              id:                   item.id,
+              question_text:        item.question_text,
+              question_type:        item.question_type,
+              photo_required:       item.photo_required,
+              expected_min_seconds: null,
+              notes_prompt:         item.notes_prompt,
+              group_name:           comp?.name ?? 'Inspection',
+              source:               'template',
+            })
           }
         }
       }
